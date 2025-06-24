@@ -4,6 +4,7 @@ import json
 import random
 import string
 from collections import defaultdict
+import time
 
 PORT = 3000
 
@@ -25,20 +26,62 @@ EVENTS = [
 # 数据结构
 class Player:
     def __init__(self, user_info, ws):
-        self.id = user_info['id']
-        self.name = user_info['name']
+        self.id = user_info.get('id')
+        self.name = user_info.get('name')
         self.socket = ws
         self.cards = []
         self.uno = False
+        self.lastCard = None
+        self.socketInstance = ws  # 兼容 TS
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'cards': self.cards,
+            'uno': self.uno,
+            'lastCard': self.lastCard,
+            'socketInstance': None  # 不传递 socket
+        }
 
 class Room:
     def __init__(self, creator_info, ws, code):
-        self.code = code
-        self.status = 'WAITING'  # WAITING, GAMING, END
+        self.roomId = code
+        self.roomName = f"UNO房间{code}"
+        self.owner = Player(creator_info, ws).to_dict()
+        self.roomCode = code
         self.players = [Player(creator_info, ws)]
-        self.last_card = None
-        self.game_cards = []
+        self.gameCards = []
+        self.userCards = {}
+        self.lastCard = None
         self.order = 0
+        self.status = 'WAITING'
+        self.winnerOrder = []
+        self.createTime = int(time.time() * 1000)
+        self.startTime = -1
+        self.endTime = -1
+        self.accumulation = 0
+        self.playOrder = 1
+
+    def to_dict(self):
+        return {
+            'roomId': self.roomId,
+            'roomName': self.roomName,
+            'owner': self.owner,
+            'roomCode': self.roomCode,
+            'players': [p.to_dict() for p in self.players],
+            'gameCards': [],  # 不传递真实牌堆
+            'userCards': {},  # 兼容 TS
+            'lastCard': self.lastCard,
+            'order': self.order,
+            'status': self.status,
+            'winnerOrder': [p.to_dict() for p in self.winnerOrder],
+            'createTime': self.createTime,
+            'startTime': self.startTime,
+            'endTime': self.endTime,
+            'accumulation': self.accumulation,
+            'playOrder': self.playOrder
+        }
 
 class User:
     def __init__(self, user_info):
@@ -74,15 +117,12 @@ async def create_room(data, ws, wss):
         code = random_code()
     room = Room(data, ws, code)
     room_collection[code] = room
-    await ws.send(json.dumps({
-        'message': '房间创建成功',
+    await send(ws, {
         'type': 'RES_CREATE_ROOM',
-        'data': {
-            'code': code,
-            'status': room.status,
-            'players': [{ 'id': p.id, 'name': p.name } for p in room.players]
-        }
-    }))
+        'data': room.to_dict(),
+        'message': '房间创建成功'
+    })
+    await update_player_list(room, f"玩家 {room.players[0].name} 进入")
 
 # CREATE_USER
 async def create_user(data, ws, wss):
@@ -123,50 +163,40 @@ async def join_room(data, ws, wss):
     room = room_collection.get(room_code)
     if not room:
         await send(ws, {
-            'message': '房间不存在',
             'type': 'RES_JOIN_ROOM',
-            'data': None
+            'data': None,
+            'message': '房间不存在'
         })
         return
     if room.status == 'GAMING':
         await send(ws, {
-            'message': '该房间已开始游戏',
             'type': 'RES_JOIN_ROOM',
-            'data': None
+            'data': None,
+            'message': '该房间已开始游戏'
         })
         return
     if room.status == 'END':
         await send(ws, {
-            'message': '该房间游戏已结束',
             'type': 'RES_JOIN_ROOM',
-            'data': None
+            'data': None,
+            'message': '该房间游戏已结束'
         })
         return
-    # 检查是否已在房间
     for p in room.players:
         if p.id == user_info['id']:
             await send(ws, {
-                'message': '您已在房间中',
                 'type': 'RES_JOIN_ROOM',
-                'data': None
+                'data': None,
+                'message': '您已在房间中'
             })
             return
     player = Player(user_info, ws)
     room.players.append(player)
-    # 通知所有玩家
-    await emit_all_players(room, {
-        'message': f'玩家 {user_info["name"]} 进入',
-        'type': 'PLAYER_LIST_UPDATE',
-        'data': get_room_players_info(room)
-    })
+    await update_player_list(room, f"玩家 {user_info['name']} 进入")
     await send(ws, {
-        'message': '加入房间成功',
         'type': 'RES_JOIN_ROOM',
-        'data': {
-            'code': room.code,
-            'status': room.status,
-            'players': get_room_players_info(room)
-        }
+        'data': room.to_dict(),
+        'message': '加入房间成功'
     })
 
 # LEAVE_ROOM
@@ -176,9 +206,9 @@ async def leave_room(data, ws, wss):
     room = room_collection.get(room_code)
     if not room:
         await send(ws, {
-            'message': '房间不存在',
             'type': 'RES_LEAVE_ROOM',
-            'data': None
+            'data': None,
+            'message': '房间不存在'
         })
         return
     idx = None
@@ -188,30 +218,29 @@ async def leave_room(data, ws, wss):
             break
     if idx is not None:
         room.players.pop(idx)
-        # 如果只剩 1 人，结束游戏
+        await update_player_list(room, f"玩家 {user_info['name']} 离开房间")
         if len(room.players) < 2:
             room.status = 'END'
+            room.endTime = int(time.time() * 1000)
+            room.winnerOrder = sorted(room.players, key=lambda x: len(x.cards))
             await emit_all_players(room, {
-                'message': '人数不足，游戏结束',
-                'type': 'GAME_OVER',
-                'data': None
-            })
-        else:
-            await emit_all_players(room, {
-                'message': f'玩家 {user_info["name"]} 离开房间',
-                'type': 'PLAYER_LIST_UPDATE',
-                'data': get_room_players_info(room)
+                'type': 'GAME_IS_OVER',
+                'data': {
+                    'winnerOrder': [p.to_dict() for p in room.winnerOrder],
+                    'endTime': room.endTime
+                },
+                'message': '人数不足，游戏结束'
             })
         await send(ws, {
-            'message': '您已离开房间',
             'type': 'RES_LEAVE_ROOM',
-            'data': None
+            'data': None,
+            'message': '您已离开房间'
         })
     else:
         await send(ws, {
-            'message': '您不在房间中',
             'type': 'RES_LEAVE_ROOM',
-            'data': None
+            'data': None,
+            'message': '您不在房间中'
         })
 
 # DISSOLVE_ROOM
@@ -220,15 +249,15 @@ async def dissolve_room(data, ws, wss):
     room = room_collection.get(code)
     if room:
         await emit_all_players(room, {
-            'message': '房间已解散',
             'type': 'RES_DISSOLVE_ROOM',
-            'data': None
+            'data': None,
+            'message': '房间已解散'
         })
         del room_collection[code]
     await send(ws, {
-        'message': '房间已解散',
         'type': 'RES_DISSOLVE_ROOM',
-        'data': None
+        'data': None,
+        'message': '房间已解散'
     })
 
 # UNO 牌型和发牌逻辑
@@ -268,50 +297,48 @@ async def start_game(data, ws, wss):
     room = room_collection.get(room_code)
     if not room:
         await send(ws, {
-            'message': '房间不存在',
             'type': 'RES_START_GAME',
-            'data': None
+            'data': None,
+            'message': '房间不存在'
         })
         return
     if len(room.players) < 2:
         await send(ws, {
-            'message': '当前人数不足两人，无法开始游戏',
             'type': 'RES_START_GAME',
-            'data': None
+            'data': None,
+            'message': '当前人数不足两人，无法开始游戏'
         })
         return
-    # 初始化房间状态
     room.status = 'GAMING'
-    room.game_cards = generate_uno_deck()
-    hands = deal_cards(room.game_cards, len(room.players))
+    room.startTime = int(time.time() * 1000)
+    room.gameCards = generate_uno_deck()
+    hands = deal_cards(room.gameCards, len(room.players))
     for i, player in enumerate(room.players):
         player.cards = hands[i]
         player.uno = False
-    # 翻第一张牌做为起始牌
+        player.lastCard = None
+        room.userCards[player.id] = player.cards
     while True:
-        first_card = room.game_cards.pop()
+        first_card = room.gameCards.pop()
         if first_card['color'] != 'black':
-            room.last_card = first_card
+            room.lastCard = first_card
             break
         else:
-            room.game_cards.insert(0, first_card)  # 万能牌放回底部
+            room.gameCards.insert(0, first_card)
     room.order = 0
-    # 通知所有玩家
     for i, player in enumerate(room.players):
         await send(player.socket, {
-            'message': '游戏开始，您的手牌如下',
-            'type': 'GAME_START',
+            'type': 'GAME_IS_START',
             'data': {
-                'userCards': player.cards,
-                'firstCard': room.last_card,
-                'players': get_room_players_info(room),
-                'order': room.order
-            }
+                'roomInfo': room.to_dict(),
+                'userCards': player.cards
+            },
+            'message': '游戏开始啦'
         })
     await emit_all_players(room, {
-        'message': '游戏已开始',
         'type': 'RES_START_GAME',
-        'data': None
+        'data': None,
+        'message': '游戏已开始'
     })
 
 # GET_ONE_CARD
@@ -333,14 +360,14 @@ async def get_one_card(data, ws, wss):
             'data': None
         })
         return
-    if not room.game_cards:
+    if not room.gameCards:
         await send(ws, {
             'message': '牌堆已空',
             'type': 'RES_GET_ONE_CARD',
             'data': None
         })
         return
-    card = room.game_cards.pop()
+    card = room.gameCards.pop()
     player.cards.append(card)
     # 如果玩家手牌大于1且UNO状态为True，重置UNO状态
     if len(player.cards) > 1 and player.uno:
@@ -373,7 +400,7 @@ async def next_turn(data, ws, wss):
         'data': {
             'order': room.order,
             'players': get_room_players_info(room),
-            'lastCard': room.last_card
+            'lastCard': room.lastCard
         }
     })
 
@@ -424,7 +451,7 @@ async def out_of_the_card(data, ws, wss):
             'data': None
         })
         return
-    last_card = room.last_card
+    last_card = room.lastCard
     if not all(is_valid_play(card, last_card) for card in out_cards):
         await send(ws, {
             'message': '出牌不符合规则，请重新出牌',
@@ -436,24 +463,24 @@ async def out_of_the_card(data, ws, wss):
     for i in sorted(cards_index, reverse=True):
         player.cards.pop(i)
     # 更新房间当前牌
-    room.last_card = out_cards[-1]
+    room.lastCard = out_cards[-1]
     # 处理功能牌
     skip = False
     draw_count = 0
     reverse = False
-    if room.last_card['color'] == 'black':
+    if room.lastCard['color'] == 'black':
         # wild/wild_draw4 需要客户端额外发送 SUBMIT_COLOR
-        if room.last_card['value'] == 'wild_draw4':
+        if room.lastCard['value'] == 'wild_draw4':
             draw_count = 4
             skip = True
-        elif room.last_card['value'] == 'wild':
+        elif room.lastCard['value'] == 'wild':
             skip = True
-    elif room.last_card['value'] == 'skip':
+    elif room.lastCard['value'] == 'skip':
         skip = True
-    elif room.last_card['value'] == 'draw2':
+    elif room.lastCard['value'] == 'draw2':
         draw_count = 2
         skip = True
-    elif room.last_card['value'] == 'reverse':
+    elif room.lastCard['value'] == 'reverse':
         reverse = True
     # UNO 检查
     if len(player.cards) == 0:
@@ -466,7 +493,7 @@ async def out_of_the_card(data, ws, wss):
         return
     elif len(player.cards) == 1 and not player.uno:
         # 未喊UNO，自动加两张牌
-        player.cards.extend([room.game_cards.pop(), room.game_cards.pop()])
+        player.cards.extend([room.gameCards.pop(), room.gameCards.pop()])
         await send(ws, {
             'message': '请记得UNO！获得手牌2张',
             'type': 'RES_OUT_OF_THE_CARD',
@@ -489,8 +516,8 @@ async def out_of_the_card(data, ws, wss):
     if draw_count > 0:
         next_player = room.players[room.order]
         for _ in range(draw_count):
-            if room.game_cards:
-                next_player.cards.append(room.game_cards.pop())
+            if room.gameCards:
+                next_player.cards.append(room.gameCards.pop())
         await send(next_player.socket, {
             'message': f'你被罚摸{draw_count}张牌',
             'type': 'DRAW_PENALTY',
@@ -503,7 +530,7 @@ async def out_of_the_card(data, ws, wss):
         'data': {
             'order': room.order,
             'players': get_room_players_info(room),
-            'lastCard': room.last_card
+            'lastCard': room.lastCard
         }
     })
 
@@ -519,14 +546,14 @@ async def submit_color(data, ws, wss):
             'data': None
         })
         return
-    if not room.last_card or room.last_card['color'] != 'black':
+    if not room.lastCard or room.lastCard['color'] != 'black':
         await send(ws, {
             'message': '当前牌不是万能牌，不能变色',
             'type': 'RES_SUBMIT_COLOR',
             'data': None
         })
         return
-    room.last_card['color'] = color
+    room.lastCard['color'] = color
     await emit_all_players(room, {
         'message': f'卡牌颜色更改为：{color}',
         'type': 'COLOR_IS_CHANGE',
@@ -540,7 +567,7 @@ async def submit_color(data, ws, wss):
         'data': {
             'order': room.order,
             'players': get_room_players_info(room),
-            'lastCard': room.last_card
+            'lastCard': room.lastCard
         }
     })
 
@@ -575,6 +602,14 @@ async def uno(data, ws, wss):
         'message': f'玩家{player.name} UNO!',
         'type': 'RES_UNO',
         'data': None
+    })
+
+# 玩家列表推送
+async def update_player_list(room, message):
+    await emit_all_players(room, {
+        'type': 'UPDATE_PLAYER_LIST',
+        'data': [p.to_dict() for p in room.players],
+        'message': message
     })
 
 # 事件注册
