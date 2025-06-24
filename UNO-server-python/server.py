@@ -341,45 +341,74 @@ async def start_game(data, ws, wss):
         'message': '游戏已开始'
     })
 
+# 发送 DEAL_CARDS（摸牌/罚牌）
+async def send_deal_cards(player, num):
+    await send(player.socket, {
+        'type': 'RES_DEAL_CARDS',
+        'data': player.cards,
+        'message': f'获得卡牌 {num} 张'
+    })
+
+# 发送 CHANGE_UNO_STATUS
+async def send_uno_status(player, status):
+    await send(player.socket, {
+        'type': 'CHANGE_UNO_STATUS',
+        'data': {
+            'playerId': player.id,
+            'playerName': player.name,
+            'unoStatus': status
+        },
+        'message': None
+    })
+
+# 发送 SELECT_COLOR
+async def send_select_color(player):
+    await send(player.socket, {
+        'type': 'SELECT_COLOR',
+        'data': None,
+        'message': '请选择颜色'
+    })
+
 # GET_ONE_CARD
 async def get_one_card(data, ws, wss):
     room_code = data
     room = room_collection.get(room_code)
     if not room:
         await send(ws, {
-            'message': '房间不存在',
             'type': 'RES_GET_ONE_CARD',
-            'data': None
+            'data': None,
+            'message': '房间不存在'
         })
         return
     player = next((p for p in room.players if p.socket == ws), None)
     if not player:
         await send(ws, {
-            'message': '玩家不存在',
             'type': 'RES_GET_ONE_CARD',
-            'data': None
+            'data': None,
+            'message': '玩家不存在'
         })
         return
     if not room.gameCards:
         await send(ws, {
-            'message': '牌堆已空',
             'type': 'RES_GET_ONE_CARD',
-            'data': None
+            'data': None,
+            'message': '牌堆已空'
         })
         return
     card = room.gameCards.pop()
     player.cards.append(card)
-    # 如果玩家手牌大于1且UNO状态为True，重置UNO状态
     if len(player.cards) > 1 and player.uno:
         player.uno = False
+        await send_uno_status(player, False)
     await send(ws, {
-        'message': '摸牌成功',
         'type': 'RES_GET_ONE_CARD',
         'data': {
             'userCards': player.cards,
             'card': card
-        }
+        },
+        'message': '摸牌成功'
     })
+    await send_deal_cards(player, 1)
 
 # NEXT_TURN
 async def next_turn(data, ws, wss):
@@ -421,55 +450,51 @@ async def out_of_the_card(data, ws, wss):
     room = room_collection.get(room_code)
     if not room:
         await send(ws, {
-            'message': '房间不存在',
             'type': 'RES_OUT_OF_THE_CARD',
-            'data': None
+            'data': None,
+            'message': '房间不存在'
         })
         return
     player = next((p for p in room.players if p.socket == ws), None)
     if not player:
         await send(ws, {
-            'message': '玩家不存在',
             'type': 'RES_OUT_OF_THE_CARD',
-            'data': None
+            'data': None,
+            'message': '玩家不存在'
         })
         return
     if not cards_index:
         await send(ws, {
-            'message': '请选择要出的牌',
             'type': 'RES_OUT_OF_THE_CARD',
-            'data': None
+            'data': None,
+            'message': '请选择要出的牌'
         })
         return
-    # 校验出牌
     try:
         out_cards = [player.cards[i] for i in cards_index]
     except Exception:
         await send(ws, {
-            'message': '出牌索引无效',
             'type': 'RES_OUT_OF_THE_CARD',
-            'data': None
+            'data': None,
+            'message': '出牌索引无效'
         })
         return
     last_card = room.lastCard
     if not all(is_valid_play(card, last_card) for card in out_cards):
         await send(ws, {
-            'message': '出牌不符合规则，请重新出牌',
             'type': 'RES_OUT_OF_THE_CARD',
-            'data': None
+            'data': None,
+            'message': '出牌不符合规则，请重新出牌'
         })
         return
-    # 更新玩家手牌
     for i in sorted(cards_index, reverse=True):
         player.cards.pop(i)
-    # 更新房间当前牌
     room.lastCard = out_cards[-1]
-    # 处理功能牌
     skip = False
     draw_count = 0
     reverse = False
     if room.lastCard['color'] == 'black':
-        # wild/wild_draw4 需要客户端额外发送 SUBMIT_COLOR
+        await send_select_color(player)
         if room.lastCard['value'] == 'wild_draw4':
             draw_count = 4
             skip = True
@@ -482,30 +507,33 @@ async def out_of_the_card(data, ws, wss):
         skip = True
     elif room.lastCard['value'] == 'reverse':
         reverse = True
-    # UNO 检查
     if len(player.cards) == 0:
-        await emit_all_players(room, {
-            'message': f'玩家 {player.name} 赢得了游戏！',
-            'type': 'GAME_OVER',
-            'data': None
-        })
         room.status = 'END'
+        room.endTime = int(time.time() * 1000)
+        room.winnerOrder = sorted(room.players, key=lambda x: len(x.cards))
+        await emit_all_players(room, {
+            'type': 'GAME_IS_OVER',
+            'data': {
+                'winnerOrder': [p.to_dict() for p in room.winnerOrder],
+                'endTime': room.endTime
+            },
+            'message': f'玩家 {player.name} 赢得了游戏！'
+        })
         return
     elif len(player.cards) == 1 and not player.uno:
-        # 未喊UNO，自动加两张牌
         player.cards.extend([room.gameCards.pop(), room.gameCards.pop()])
         await send(ws, {
-            'message': '请记得UNO！获得手牌2张',
             'type': 'RES_OUT_OF_THE_CARD',
-            'data': player.cards
+            'data': player.cards,
+            'message': '请记得UNO！获得手牌2张'
         })
+        await send_deal_cards(player, 2)
     else:
         await send(ws, {
-            'message': '出牌成功',
             'type': 'RES_OUT_OF_THE_CARD',
-            'data': player.cards
+            'data': player.cards,
+            'message': '出牌成功'
         })
-    # 处理功能牌效果
     if reverse and len(room.players) > 2:
         room.players.reverse()
         room.order = (len(room.players) - room.order - 1) % len(room.players)
@@ -519,19 +547,19 @@ async def out_of_the_card(data, ws, wss):
             if room.gameCards:
                 next_player.cards.append(room.gameCards.pop())
         await send(next_player.socket, {
-            'message': f'你被罚摸{draw_count}张牌',
             'type': 'DRAW_PENALTY',
-            'data': next_player.cards
+            'data': next_player.cards,
+            'message': f'你被罚摸{draw_count}张牌'
         })
-    # 广播回合信息
+        await send_deal_cards(next_player, draw_count)
     await emit_all_players(room, {
-        'message': f'玩家 {player.name} 出牌',
         'type': 'NEXT_TURN',
         'data': {
             'order': room.order,
-            'players': get_room_players_info(room),
+            'players': [p.to_dict() for p in room.players],
             'lastCard': room.lastCard
-        }
+        },
+        'message': f'玩家 {player.name} 出牌'
     })
 
 # SUBMIT_COLOR
@@ -541,34 +569,33 @@ async def submit_color(data, ws, wss):
     room = room_collection.get(room_code)
     if not room:
         await send(ws, {
-            'message': '房间不存在',
             'type': 'RES_SUBMIT_COLOR',
-            'data': None
+            'data': None,
+            'message': '房间不存在'
         })
         return
     if not room.lastCard or room.lastCard['color'] != 'black':
         await send(ws, {
-            'message': '当前牌不是万能牌，不能变色',
             'type': 'RES_SUBMIT_COLOR',
-            'data': None
+            'data': None,
+            'message': '当前牌不是万能牌，不能变色'
         })
         return
     room.lastCard['color'] = color
     await emit_all_players(room, {
-        'message': f'卡牌颜色更改为：{color}',
         'type': 'COLOR_IS_CHANGE',
-        'data': color
+        'data': color,
+        'message': f'卡牌颜色更改为：{color}'
     })
-    # 变色后进入下一回合
     room.order = (room.order + 1) % len(room.players)
     await emit_all_players(room, {
-        'message': '进入下一回合',
         'type': 'NEXT_TURN',
         'data': {
             'order': room.order,
-            'players': get_room_players_info(room),
+            'players': [p.to_dict() for p in room.players],
             'lastCard': room.lastCard
-        }
+        },
+        'message': '进入下一回合'
     })
 
 # UNO
@@ -577,31 +604,32 @@ async def uno(data, ws, wss):
     room = room_collection.get(room_code)
     if not room:
         await send(ws, {
-            'message': '房间不存在',
             'type': 'RES_UNO',
-            'data': None
+            'data': None,
+            'message': '房间不存在'
         })
         return
     player = next((p for p in room.players if p.socket == ws), None)
     if not player:
         await send(ws, {
-            'message': '玩家不存在',
             'type': 'RES_UNO',
-            'data': None
+            'data': None,
+            'message': '玩家不存在'
         })
         return
     if len(player.cards) >= 2 or (len(player.cards) == 1 and player.cards[0]['value'] in ['skip', 'reverse', 'draw2', 'wild', 'wild_draw4']):
         await send(ws, {
-            'message': '不符合UNO条件',
             'type': 'RES_UNO',
-            'data': None
+            'data': None,
+            'message': '不符合UNO条件'
         })
         return
     player.uno = True
+    await send_uno_status(player, True)
     await emit_all_players(room, {
-        'message': f'玩家{player.name} UNO!',
         'type': 'RES_UNO',
-        'data': None
+        'data': None,
+        'message': f'玩家{player.name} UNO!'
     })
 
 # 玩家列表推送
