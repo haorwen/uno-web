@@ -128,19 +128,19 @@ async def create_room(data, ws, wss):
 async def create_user(data, ws, wss):
     key = data['id'] + data['name']
     if key in user_collection:
-        await ws.send(json.dumps({
-            'message': '人员已存在，请重新输入昵称',
+        await send(ws, {
             'type': 'RES_CREATE_USER',
-            'data': None
-        }))
+            'data': None,
+            'message': '人员已存在，请重新输入昵称'
+        })
         return
     user = User(data)
     user_collection[key] = user
-    await ws.send(json.dumps({
-        'message': '玩家信息创建成功',
+    await send(ws, {
         'type': 'RES_CREATE_USER',
-        'data': { 'id': user.id, 'name': user.name }
-    }))
+        'data': { 'id': user.id, 'name': user.name },
+        'message': '玩家信息创建成功'
+    })
 
 # 辅助函数
 async def send(ws, data):
@@ -680,7 +680,7 @@ for event in EVENTS:
         controllers[event] = uno
     else:
         async def not_impl(data, ws, wss, event=event):
-            await ws.send(json.dumps({'message': f'{event} 暂未实现', 'type': f'RES_{event}', 'data': None}))
+            await send(ws, {'type': f'RES_{event}', 'data': None, 'message': f'{event} 暂未实现'})
         controllers[event] = not_impl
 
 async def handler(websocket, path):
