@@ -21,6 +21,16 @@ services:
       # 开启HTTPS
       # - traefik.http.routers.uno-server.tls=true
       # - traefik.http.routers.uno-server.tls.certresolver=le
+  uno-server-python-dev:
+    build:
+      context: ./UNO-server-python
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    labels:
+      - traefik.http.routers.uno-server-python-dev.rule=Host(`dev.uno-server-python.merlin218.top`)
+      - traefik.http.routers.uno-server-python-dev.tls=true
+      - traefik.http.routers.uno-server-python-dev.tls.certresolver=le
 networks:
   default:
     external:
