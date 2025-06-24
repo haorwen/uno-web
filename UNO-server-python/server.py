@@ -314,6 +314,69 @@ async def start_game(data, ws, wss):
         'data': None
     })
 
+# GET_ONE_CARD
+async def get_one_card(data, ws, wss):
+    room_code = data
+    room = room_collection.get(room_code)
+    if not room:
+        await send(ws, {
+            'message': '房间不存在',
+            'type': 'RES_GET_ONE_CARD',
+            'data': None
+        })
+        return
+    player = next((p for p in room.players if p.socket == ws), None)
+    if not player:
+        await send(ws, {
+            'message': '玩家不存在',
+            'type': 'RES_GET_ONE_CARD',
+            'data': None
+        })
+        return
+    if not room.game_cards:
+        await send(ws, {
+            'message': '牌堆已空',
+            'type': 'RES_GET_ONE_CARD',
+            'data': None
+        })
+        return
+    card = room.game_cards.pop()
+    player.cards.append(card)
+    # 如果玩家手牌大于1且UNO状态为True，重置UNO状态
+    if len(player.cards) > 1 and player.uno:
+        player.uno = False
+    await send(ws, {
+        'message': '摸牌成功',
+        'type': 'RES_GET_ONE_CARD',
+        'data': {
+            'userCards': player.cards,
+            'card': card
+        }
+    })
+
+# NEXT_TURN
+async def next_turn(data, ws, wss):
+    room_code = data
+    room = room_collection.get(room_code)
+    if not room:
+        await send(ws, {
+            'message': '房间不存在',
+            'type': 'RES_NEXT_TURN',
+            'data': None
+        })
+        return
+    # 轮到下一个玩家
+    room.order = (room.order + 1) % len(room.players)
+    await emit_all_players(room, {
+        'message': '进入下一回合',
+        'type': 'NEXT_TURN',
+        'data': {
+            'order': room.order,
+            'players': get_room_players_info(room),
+            'lastCard': room.last_card
+        }
+    })
+
 # 事件注册
 for event in EVENTS:
     if event == 'CREATE_ROOM':
@@ -328,6 +391,10 @@ for event in EVENTS:
         controllers[event] = dissolve_room
     elif event == 'START_GAME':
         controllers[event] = start_game
+    elif event == 'GET_ONE_CARD':
+        controllers[event] = get_one_card
+    elif event == 'NEXT_TURN':
+        controllers[event] = next_turn
     else:
         async def not_impl(data, ws, wss, event=event):
             await ws.send(json.dumps({'message': f'{event} 暂未实现', 'type': f'RES_{event}', 'data': None}))
