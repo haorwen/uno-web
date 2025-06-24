@@ -507,6 +507,76 @@ async def out_of_the_card(data, ws, wss):
         }
     })
 
+# SUBMIT_COLOR
+async def submit_color(data, ws, wss):
+    color = data.get('color')
+    room_code = data.get('roomCode')
+    room = room_collection.get(room_code)
+    if not room:
+        await send(ws, {
+            'message': '房间不存在',
+            'type': 'RES_SUBMIT_COLOR',
+            'data': None
+        })
+        return
+    if not room.last_card or room.last_card['color'] != 'black':
+        await send(ws, {
+            'message': '当前牌不是万能牌，不能变色',
+            'type': 'RES_SUBMIT_COLOR',
+            'data': None
+        })
+        return
+    room.last_card['color'] = color
+    await emit_all_players(room, {
+        'message': f'卡牌颜色更改为：{color}',
+        'type': 'COLOR_IS_CHANGE',
+        'data': color
+    })
+    # 变色后进入下一回合
+    room.order = (room.order + 1) % len(room.players)
+    await emit_all_players(room, {
+        'message': '进入下一回合',
+        'type': 'NEXT_TURN',
+        'data': {
+            'order': room.order,
+            'players': get_room_players_info(room),
+            'lastCard': room.last_card
+        }
+    })
+
+# UNO
+async def uno(data, ws, wss):
+    room_code = data
+    room = room_collection.get(room_code)
+    if not room:
+        await send(ws, {
+            'message': '房间不存在',
+            'type': 'RES_UNO',
+            'data': None
+        })
+        return
+    player = next((p for p in room.players if p.socket == ws), None)
+    if not player:
+        await send(ws, {
+            'message': '玩家不存在',
+            'type': 'RES_UNO',
+            'data': None
+        })
+        return
+    if len(player.cards) >= 2 or (len(player.cards) == 1 and player.cards[0]['value'] in ['skip', 'reverse', 'draw2', 'wild', 'wild_draw4']):
+        await send(ws, {
+            'message': '不符合UNO条件',
+            'type': 'RES_UNO',
+            'data': None
+        })
+        return
+    player.uno = True
+    await emit_all_players(room, {
+        'message': f'玩家{player.name} UNO!',
+        'type': 'RES_UNO',
+        'data': None
+    })
+
 # 事件注册
 for event in EVENTS:
     if event == 'CREATE_ROOM':
@@ -527,6 +597,10 @@ for event in EVENTS:
         controllers[event] = next_turn
     elif event == 'OUT_OF_THE_CARD':
         controllers[event] = out_of_the_card
+    elif event == 'SUBMIT_COLOR':
+        controllers[event] = submit_color
+    elif event == 'UNO':
+        controllers[event] = uno
     else:
         async def not_impl(data, ws, wss, event=event):
             await ws.send(json.dumps({'message': f'{event} 暂未实现', 'type': f'RES_{event}', 'data': None}))
