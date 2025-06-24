@@ -1,6 +1,8 @@
 import asyncio
 import websockets
 import json
+import random
+import string
 from collections import defaultdict
 
 PORT = 3000
@@ -20,11 +22,38 @@ EVENTS = [
     'UNO'
 ]
 
-# 客户端集合
-clients = set()
+# 数据结构
+class Player:
+    def __init__(self, user_info, ws):
+        self.id = user_info['id']
+        self.name = user_info['name']
+        self.socket = ws
+        self.cards = []
+        self.uno = False
 
-# 事件处理器注册表
+class Room:
+    def __init__(self, creator_info, ws, code):
+        self.code = code
+        self.status = 'WAITING'  # WAITING, GAMING, END
+        self.players = [Player(creator_info, ws)]
+        self.last_card = None
+        self.game_cards = []
+        self.order = 0
+
+class User:
+    def __init__(self, user_info):
+        self.id = user_info['id']
+        self.name = user_info['name']
+
+# 全局集合
+room_collection = {}
+user_collection = {}
+
+clients = set()
 controllers = {}
+
+def random_code(length=6):
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 # 事件分发
 async def handle_event(event_type, data, websocket, wss):
@@ -38,17 +67,51 @@ async def handle_event(event_type, data, websocket, wss):
             'data': None
         }))
 
-# 事件处理器示例（需后续完善）
+# CREATE_ROOM
 async def create_room(data, ws, wss):
+    code = random_code()
+    while code in room_collection:
+        code = random_code()
+    room = Room(data, ws, code)
+    room_collection[code] = room
     await ws.send(json.dumps({
         'message': '房间创建成功',
         'type': 'RES_CREATE_ROOM',
-        'data': None
+        'data': {
+            'code': code,
+            'status': room.status,
+            'players': [{ 'id': p.id, 'name': p.name } for p in room.players]
+        }
     }))
 
-# 注册所有事件（后续需完善每个事件的处理逻辑）
+# CREATE_USER
+async def create_user(data, ws, wss):
+    key = data['id'] + data['name']
+    if key in user_collection:
+        await ws.send(json.dumps({
+            'message': '人员已存在，请重新输入昵称',
+            'type': 'RES_CREATE_USER',
+            'data': None
+        }))
+        return
+    user = User(data)
+    user_collection[key] = user
+    await ws.send(json.dumps({
+        'message': '玩家信息创建成功',
+        'type': 'RES_CREATE_USER',
+        'data': { 'id': user.id, 'name': user.name }
+    }))
+
+# 事件注册
 for event in EVENTS:
-    controllers[event] = create_room  # 先全部指向 create_room 占位
+    if event == 'CREATE_ROOM':
+        controllers[event] = create_room
+    elif event == 'CREATE_USER':
+        controllers[event] = create_user
+    else:
+        async def not_impl(data, ws, wss):
+            await ws.send(json.dumps({'message': f'{event} 暂未实现', 'type': f'RES_{event}', 'data': None}))
+        controllers[event] = not_impl
 
 async def handler(websocket, path):
     clients.add(websocket)
