@@ -102,14 +102,149 @@ async def create_user(data, ws, wss):
         'data': { 'id': user.id, 'name': user.name }
     }))
 
+# 辅助函数
+async def send(ws, data):
+    try:
+        await ws.send(json.dumps(data))
+    except Exception as e:
+        pass
+
+def get_room_players_info(room):
+    return [{ 'id': p.id, 'name': p.name } for p in room.players]
+
+async def emit_all_players(room, data):
+    for p in room.players:
+        await send(p.socket, data)
+
+# JOIN_ROOM
+async def join_room(data, ws, wss):
+    room_code = data.get('roomCode')
+    user_info = data.get('userInfo')
+    room = room_collection.get(room_code)
+    if not room:
+        await send(ws, {
+            'message': '房间不存在',
+            'type': 'RES_JOIN_ROOM',
+            'data': None
+        })
+        return
+    if room.status == 'GAMING':
+        await send(ws, {
+            'message': '该房间已开始游戏',
+            'type': 'RES_JOIN_ROOM',
+            'data': None
+        })
+        return
+    if room.status == 'END':
+        await send(ws, {
+            'message': '该房间游戏已结束',
+            'type': 'RES_JOIN_ROOM',
+            'data': None
+        })
+        return
+    # 检查是否已在房间
+    for p in room.players:
+        if p.id == user_info['id']:
+            await send(ws, {
+                'message': '您已在房间中',
+                'type': 'RES_JOIN_ROOM',
+                'data': None
+            })
+            return
+    player = Player(user_info, ws)
+    room.players.append(player)
+    # 通知所有玩家
+    await emit_all_players(room, {
+        'message': f'玩家 {user_info["name"]} 进入',
+        'type': 'PLAYER_LIST_UPDATE',
+        'data': get_room_players_info(room)
+    })
+    await send(ws, {
+        'message': '加入房间成功',
+        'type': 'RES_JOIN_ROOM',
+        'data': {
+            'code': room.code,
+            'status': room.status,
+            'players': get_room_players_info(room)
+        }
+    })
+
+# LEAVE_ROOM
+async def leave_room(data, ws, wss):
+    room_code = data.get('roomCode')
+    user_info = data.get('userInfo')
+    room = room_collection.get(room_code)
+    if not room:
+        await send(ws, {
+            'message': '房间不存在',
+            'type': 'RES_LEAVE_ROOM',
+            'data': None
+        })
+        return
+    idx = None
+    for i, p in enumerate(room.players):
+        if p.id == user_info['id']:
+            idx = i
+            break
+    if idx is not None:
+        room.players.pop(idx)
+        # 如果只剩 1 人，结束游戏
+        if len(room.players) < 2:
+            room.status = 'END'
+            await emit_all_players(room, {
+                'message': '人数不足，游戏结束',
+                'type': 'GAME_OVER',
+                'data': None
+            })
+        else:
+            await emit_all_players(room, {
+                'message': f'玩家 {user_info["name"]} 离开房间',
+                'type': 'PLAYER_LIST_UPDATE',
+                'data': get_room_players_info(room)
+            })
+        await send(ws, {
+            'message': '您已离开房间',
+            'type': 'RES_LEAVE_ROOM',
+            'data': None
+        })
+    else:
+        await send(ws, {
+            'message': '您不在房间中',
+            'type': 'RES_LEAVE_ROOM',
+            'data': None
+        })
+
+# DISSOLVE_ROOM
+async def dissolve_room(data, ws, wss):
+    code = data
+    room = room_collection.get(code)
+    if room:
+        await emit_all_players(room, {
+            'message': '房间已解散',
+            'type': 'RES_DISSOLVE_ROOM',
+            'data': None
+        })
+        del room_collection[code]
+    await send(ws, {
+        'message': '房间已解散',
+        'type': 'RES_DISSOLVE_ROOM',
+        'data': None
+    })
+
 # 事件注册
 for event in EVENTS:
     if event == 'CREATE_ROOM':
         controllers[event] = create_room
     elif event == 'CREATE_USER':
         controllers[event] = create_user
+    elif event == 'JOIN_ROOM':
+        controllers[event] = join_room
+    elif event == 'LEAVE_ROOM':
+        controllers[event] = leave_room
+    elif event == 'DISSOLVE_ROOM':
+        controllers[event] = dissolve_room
     else:
-        async def not_impl(data, ws, wss):
+        async def not_impl(data, ws, wss, event=event):
             await ws.send(json.dumps({'message': f'{event} 暂未实现', 'type': f'RES_{event}', 'data': None}))
         controllers[event] = not_impl
 
