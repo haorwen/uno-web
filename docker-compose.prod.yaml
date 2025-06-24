@@ -27,10 +27,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
-    labels:
-      - traefik.http.routers.uno-server-python.rule=Host(`uno-server-python.merlin218.top`)
-      - traefik.http.routers.uno-server-python.tls=true
-      - traefik.http.routers.uno-server-python.tls.certresolver=le
+    # 移除域名相关配置，仅使用端口映射
 networks:
   default:
     external:
