@@ -5,30 +5,19 @@ services:
     build:
       context: .
       dockerfile: fe.dev.Dockerfile
-    labels:
-      # 设置Host 为 localhost 进行域名访问
-      - traefik.http.routers.uno-dev.rule=Host(`dev.uno.merlin218.top`)
-      # 开启HTTPS
-      - traefik.http.routers.uno-dev.tls=true
-      - traefik.http.routers.uno-dev.tls.certresolver=le
+    ports:
+      - "8080:80"  # 前端开发服务端口
+
   server-dev:
     build:
       context: .
       dockerfile: end.Dockerfile
-      # labels:
-      # 设置Host 为 localhost 进行域名访问
-      # - traefik.http.routers.uno-server.rule=Host(`uno.merlin218.top`)
-      # 开启HTTPS
-      # - traefik.http.routers.uno-server.tls=true
-      # - traefik.http.routers.uno-server.tls.certresolver=le
+    ports:
+      - "3001:3000"  # 原 Node 服务端口
+
   uno-server-python-dev:
     build:
       context: ./UNO-server-python
       dockerfile: Dockerfile
     ports:
-      - "3000:3000"
-    # 移除域名相关配置，仅使用端口映射
-networks:
-  default:
-    external:
-      name: traefik_default
+      - "3000:3000"  # Python 服务端口
