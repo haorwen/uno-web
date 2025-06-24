@@ -231,6 +231,89 @@ async def dissolve_room(data, ws, wss):
         'data': None
     })
 
+# UNO 牌型和发牌逻辑
+UNO_COLORS = ['red', 'yellow', 'green', 'blue']
+UNO_NUMBERS = list(range(0, 10))
+UNO_ACTIONS = ['skip', 'reverse', 'draw2']
+UNO_WILDS = ['wild', 'wild_draw4']
+
+def generate_uno_deck():
+    deck = []
+    # 普通牌
+    for color in UNO_COLORS:
+        deck.append({'color': color, 'value': 0})  # 0 只有一张
+        for n in range(1, 10):
+            deck.append({'color': color, 'value': n})
+            deck.append({'color': color, 'value': n})  # 1-9 各两张
+        for action in UNO_ACTIONS:
+            deck.append({'color': color, 'value': action})
+            deck.append({'color': color, 'value': action})  # action 各两张
+    # 万能牌
+    for _ in range(4):
+        deck.append({'color': 'black', 'value': 'wild'})
+        deck.append({'color': 'black', 'value': 'wild_draw4'})
+    random.shuffle(deck)
+    return deck
+
+def deal_cards(deck, num_players, cards_per_player=7):
+    hands = []
+    for _ in range(num_players):
+        hand = [deck.pop() for _ in range(cards_per_player)]
+        hands.append(hand)
+    return hands
+
+# START_GAME
+async def start_game(data, ws, wss):
+    room_code = data
+    room = room_collection.get(room_code)
+    if not room:
+        await send(ws, {
+            'message': '房间不存在',
+            'type': 'RES_START_GAME',
+            'data': None
+        })
+        return
+    if len(room.players) < 2:
+        await send(ws, {
+            'message': '当前人数不足两人，无法开始游戏',
+            'type': 'RES_START_GAME',
+            'data': None
+        })
+        return
+    # 初始化房间状态
+    room.status = 'GAMING'
+    room.game_cards = generate_uno_deck()
+    hands = deal_cards(room.game_cards, len(room.players))
+    for i, player in enumerate(room.players):
+        player.cards = hands[i]
+        player.uno = False
+    # 翻第一张牌做为起始牌
+    while True:
+        first_card = room.game_cards.pop()
+        if first_card['color'] != 'black':
+            room.last_card = first_card
+            break
+        else:
+            room.game_cards.insert(0, first_card)  # 万能牌放回底部
+    room.order = 0
+    # 通知所有玩家
+    for i, player in enumerate(room.players):
+        await send(player.socket, {
+            'message': '游戏开始，您的手牌如下',
+            'type': 'GAME_START',
+            'data': {
+                'userCards': player.cards,
+                'firstCard': room.last_card,
+                'players': get_room_players_info(room),
+                'order': room.order
+            }
+        })
+    await emit_all_players(room, {
+        'message': '游戏已开始',
+        'type': 'RES_START_GAME',
+        'data': None
+    })
+
 # 事件注册
 for event in EVENTS:
     if event == 'CREATE_ROOM':
@@ -243,6 +326,8 @@ for event in EVENTS:
         controllers[event] = leave_room
     elif event == 'DISSOLVE_ROOM':
         controllers[event] = dissolve_room
+    elif event == 'START_GAME':
+        controllers[event] = start_game
     else:
         async def not_impl(data, ws, wss, event=event):
             await ws.send(json.dumps({'message': f'{event} 暂未实现', 'type': f'RES_{event}', 'data': None}))
