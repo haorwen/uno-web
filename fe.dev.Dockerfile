@@ -4,6 +4,10 @@ WORKDIR /code
 
 RUN npm install pnpm -g
 
+# 设置 pnpm 使用国内镜像
+RUN pnpm config set registry https://registry.npmmirror.com/
+RUN pnpm config set electron_mirror https://npmmirror.com/mirrors/electron/
+
 ADD ./UNO-client/package.json ./UNO-client/pnpm-lock.yaml /code/
 RUN pnpm i
 
