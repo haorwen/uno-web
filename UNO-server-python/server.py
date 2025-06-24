@@ -562,7 +562,15 @@ async def out_of_the_card(data, ws, wss):
         'message': f'玩家 {player.name} 出牌'
     })
 
-# SUBMIT_COLOR
+# 辅助：推送 UPDATE_ROOM_INFO
+async def update_room_info(room, message=None):
+    await emit_all_players(room, {
+        'type': 'UPDATE_ROOM_INFO',
+        'data': room.to_dict(),
+        'message': message or '房间信息已更新'
+    })
+
+# SUBMIT_COLOR 响应 RES_SUBMIT_COLOR
 async def submit_color(data, ws, wss):
     color = data.get('color')
     room_code = data.get('roomCode')
@@ -582,6 +590,11 @@ async def submit_color(data, ws, wss):
         })
         return
     room.lastCard['color'] = color
+    await send(ws, {
+        'type': 'RES_SUBMIT_COLOR',
+        'data': color,
+        'message': '变色成功'
+    })
     await emit_all_players(room, {
         'type': 'COLOR_IS_CHANGE',
         'data': color,
@@ -597,6 +610,7 @@ async def submit_color(data, ws, wss):
         },
         'message': '进入下一回合'
     })
+    await update_room_info(room)
 
 # UNO
 async def uno(data, ws, wss):
