@@ -8,13 +8,6 @@ services:
     ports:
       - "8080:80"  # 前端开发服务端口
 
-  server-dev:
-    build:
-      context: .
-      dockerfile: end.Dockerfile
-    ports:
-      - "3001:3000"  # 原 Node 服务端口
-
   uno-server-python-dev:
     build:
       context: ./UNO-server-python
