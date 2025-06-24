@@ -377,6 +377,136 @@ async def next_turn(data, ws, wss):
         }
     })
 
+# 校验出牌是否合法
+def is_valid_play(card, last_card):
+    if card['color'] == 'black':
+        return True
+    if card['color'] == last_card['color']:
+        return True
+    if card['value'] == last_card['value']:
+        return True
+    return False
+
+# OUT_OF_THE_CARD
+async def out_of_the_card(data, ws, wss):
+    room_code = data.get('roomCode')
+    cards_index = data.get('cardsIndex')
+    room = room_collection.get(room_code)
+    if not room:
+        await send(ws, {
+            'message': '房间不存在',
+            'type': 'RES_OUT_OF_THE_CARD',
+            'data': None
+        })
+        return
+    player = next((p for p in room.players if p.socket == ws), None)
+    if not player:
+        await send(ws, {
+            'message': '玩家不存在',
+            'type': 'RES_OUT_OF_THE_CARD',
+            'data': None
+        })
+        return
+    if not cards_index:
+        await send(ws, {
+            'message': '请选择要出的牌',
+            'type': 'RES_OUT_OF_THE_CARD',
+            'data': None
+        })
+        return
+    # 校验出牌
+    try:
+        out_cards = [player.cards[i] for i in cards_index]
+    except Exception:
+        await send(ws, {
+            'message': '出牌索引无效',
+            'type': 'RES_OUT_OF_THE_CARD',
+            'data': None
+        })
+        return
+    last_card = room.last_card
+    if not all(is_valid_play(card, last_card) for card in out_cards):
+        await send(ws, {
+            'message': '出牌不符合规则，请重新出牌',
+            'type': 'RES_OUT_OF_THE_CARD',
+            'data': None
+        })
+        return
+    # 更新玩家手牌
+    for i in sorted(cards_index, reverse=True):
+        player.cards.pop(i)
+    # 更新房间当前牌
+    room.last_card = out_cards[-1]
+    # 处理功能牌
+    skip = False
+    draw_count = 0
+    reverse = False
+    if room.last_card['color'] == 'black':
+        # wild/wild_draw4 需要客户端额外发送 SUBMIT_COLOR
+        if room.last_card['value'] == 'wild_draw4':
+            draw_count = 4
+            skip = True
+        elif room.last_card['value'] == 'wild':
+            skip = True
+    elif room.last_card['value'] == 'skip':
+        skip = True
+    elif room.last_card['value'] == 'draw2':
+        draw_count = 2
+        skip = True
+    elif room.last_card['value'] == 'reverse':
+        reverse = True
+    # UNO 检查
+    if len(player.cards) == 0:
+        await emit_all_players(room, {
+            'message': f'玩家 {player.name} 赢得了游戏！',
+            'type': 'GAME_OVER',
+            'data': None
+        })
+        room.status = 'END'
+        return
+    elif len(player.cards) == 1 and not player.uno:
+        # 未喊UNO，自动加两张牌
+        player.cards.extend([room.game_cards.pop(), room.game_cards.pop()])
+        await send(ws, {
+            'message': '请记得UNO！获得手牌2张',
+            'type': 'RES_OUT_OF_THE_CARD',
+            'data': player.cards
+        })
+    else:
+        await send(ws, {
+            'message': '出牌成功',
+            'type': 'RES_OUT_OF_THE_CARD',
+            'data': player.cards
+        })
+    # 处理功能牌效果
+    if reverse and len(room.players) > 2:
+        room.players.reverse()
+        room.order = (len(room.players) - room.order - 1) % len(room.players)
+    if skip:
+        room.order = (room.order + 2) % len(room.players)
+    else:
+        room.order = (room.order + 1) % len(room.players)
+    if draw_count > 0:
+        next_player = room.players[room.order]
+        for _ in range(draw_count):
+            if room.game_cards:
+                next_player.cards.append(room.game_cards.pop())
+        await send(next_player.socket, {
+            'message': f'你被罚摸{draw_count}张牌',
+            'type': 'DRAW_PENALTY',
+            'data': next_player.cards
+        })
+    # 广播回合信息
+    await emit_all_players(room, {
+        'message': f'玩家 {player.name} 出牌',
+        'type': 'NEXT_TURN',
+        'data': {
+            'order': room.order,
+            'players': get_room_players_info(room),
+            'lastCard': room.last_card
+        }
+    })
+
 # 事件注册
 for event in EVENTS:
     if event == 'CREATE_ROOM':
@@ -395,6 +525,8 @@ for event in EVENTS:
         controllers[event] = get_one_card
     elif event == 'NEXT_TURN':
         controllers[event] = next_turn
+    elif event == 'OUT_OF_THE_CARD':
+        controllers[event] = out_of_the_card
     else:
         async def not_impl(data, ws, wss, event=event):
             await ws.send(json.dumps({'message': f'{event} 暂未实现', 'type': f'RES_{event}', 'data': None}))
