@@ -23,7 +23,7 @@ python server.py
 
 ## 事件接口
 
-支持以下事件（与 TypeScript 版一致）：
+支持以下事件：
 - CREATE_ROOM
 - JOIN_ROOM
 - LEAVE_ROOM
