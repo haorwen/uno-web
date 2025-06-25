@@ -2,14 +2,11 @@
 
 无需安装任何APP! 你可以在网页上直接与其他的伙伴联机玩经典卡牌游戏UNO!
 
-### 欢迎共建!!!
-有意者可以私聊vx: `Merlin_nil218`
-
 ## 技术栈
 
 前端：Vue3 + Typescript + socket.io-client
 
-后端：Express + Typescript + socket.io
+后端：Python
 
 ## 开发进度
 
