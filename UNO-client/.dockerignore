@@ -1,6 +1,0 @@
-UNO-client/node_modules
-UNO-client/dist
-UNO-server-python/__pycache__
-*.log
-npm-debug.log
-.DS_Store 
