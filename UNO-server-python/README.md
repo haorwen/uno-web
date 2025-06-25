@@ -1,6 +1,6 @@
 # UNO-server-python
 
-这是 UNO 游戏的 Python WebSocket 服务器实现，接口与原 TypeScript 版 UNO-server 完全一致。
+这是 UNO 游戏的 Python WebSocket 服务器实现。
 
 ## 依赖
 
