@@ -1,6 +1,7 @@
 # UNO - A Classic Card Game!
 
 无需安装任何APP! 你可以在网页上直接与其他的伙伴联机玩经典卡牌游戏UNO!
+你可以联系haorwen来一起开发
 
 ## 技术栈
 
